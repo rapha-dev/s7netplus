@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Reflection;
 
@@ -25,7 +26,7 @@ namespace S7.Net.Types
 
         }
 
-        private static double GetIncreasedNumberOfBytes(double startingNumberOfBytes, Type type)
+        private static double GetIncreasedNumberOfBytes(double startingNumberOfBytes, Type type, PropertyInfo property)
         {
             double numBytes = startingNumberOfBytes;
 
@@ -59,6 +60,14 @@ namespace S7.Net.Types
                         numBytes++;
                     numBytes += 4;
                     break;
+                case "String":
+                    numBytes = Math.Ceiling(numBytes);
+                    if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
+                        numBytes++;
+                    // get Data Annotation
+                    var maxLengthAttribute = (MaxLengthAttribute) property.GetCustomAttribute(typeof(MaxLengthAttribute), false);
+                    numBytes += maxLengthAttribute.Length + 2;      // string + header = StringEx
+                    break;
                 default:
                     var propertyClass = Activator.CreateInstance(type);
                     numBytes += GetClassSize(propertyClass);
@@ -80,10 +89,15 @@ namespace S7.Net.Types
             var properties = GetAccessableProperties(instance.GetType());
             foreach (var property in properties)
             {
+                if (property.PropertyType == typeof(System.String) && property.GetCustomAttribute(typeof(MaxLengthAttribute), false) == null)
+                {
+                    throw new Exception("Cannot determine size of class, because a String property has no attribute MaxLength.");
+                }
+
                 if (property.PropertyType.IsArray)
                 {
                     Type elementType = property.PropertyType.GetElementType();
-                    Array array = (Array)property.GetValue(instance, null);
+                    Array array = (Array) property.GetValue(instance, null);
                     if (array.Length <= 0)
                     {
                         throw new Exception("Cannot determine size of class, because an array is defined which has no fixed size greater than zero.");
@@ -91,22 +105,22 @@ namespace S7.Net.Types
 
                     for (int i = 0; i < array.Length; i++)
                     {
-                        numBytes = GetIncreasedNumberOfBytes(numBytes, elementType);
+                        numBytes = GetIncreasedNumberOfBytes(numBytes, elementType, property);
                     }
                 }
                 else
                 {
-                    numBytes = GetIncreasedNumberOfBytes(numBytes, property.PropertyType);
+                    numBytes = GetIncreasedNumberOfBytes(numBytes, property.PropertyType, property);
                 }
             }
             // enlarge numBytes to next even number because S7-Structs in a DB always will be resized to an even byte count
             numBytes = Math.Ceiling(numBytes);
             if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
                 numBytes++;
-            return (int)numBytes;
+            return (int) numBytes;
         }
 
-        private static object GetPropertyValue(Type propertyType, byte[] bytes, ref double numBytes)
+        private static object GetPropertyValue(Type propertyType, byte[] bytes, ref double numBytes, PropertyInfo property)
         {
             object value = null;
 
@@ -114,9 +128,9 @@ namespace S7.Net.Types
             {
                 case "Boolean":
                     // get the value
-                    int bytePos = (int)Math.Floor(numBytes);
-                    int bitPos = (int)((numBytes - (double)bytePos) / 0.125);
-                    if ((bytes[bytePos] & (int)Math.Pow(2, bitPos)) != 0)
+                    int bytePos = (int) Math.Floor(numBytes);
+                    int bitPos = (int) ((numBytes - (double) bytePos) / 0.125);
+                    if ((bytes[bytePos] & (int) Math.Pow(2, bitPos)) != 0)
                         value = true;
                     else
                         value = false;
@@ -124,7 +138,7 @@ namespace S7.Net.Types
                     break;
                 case "Byte":
                     numBytes = Math.Ceiling(numBytes);
-                    value = (byte)(bytes[(int)numBytes]);
+                    value = (byte) (bytes[(int) numBytes]);
                     numBytes++;
                     break;
                 case "Int16":
@@ -132,7 +146,7 @@ namespace S7.Net.Types
                     if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
                         numBytes++;
                     // hier auswerten
-                    ushort source = Word.FromBytes(bytes[(int)numBytes + 1], bytes[(int)numBytes]);
+                    ushort source = Word.FromBytes(bytes[(int) numBytes + 1], bytes[(int) numBytes]);
                     value = source.ConvertToShort();
                     numBytes += 2;
                     break;
@@ -141,7 +155,7 @@ namespace S7.Net.Types
                     if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
                         numBytes++;
                     // hier auswerten
-                    value = Word.FromBytes(bytes[(int)numBytes + 1], bytes[(int)numBytes]);
+                    value = Word.FromBytes(bytes[(int) numBytes + 1], bytes[(int) numBytes]);
                     numBytes += 2;
                     break;
                 case "Int32":
@@ -149,10 +163,10 @@ namespace S7.Net.Types
                     if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
                         numBytes++;
                     // hier auswerten
-                    uint sourceUInt = DWord.FromBytes(bytes[(int)numBytes + 3],
-                                                                       bytes[(int)numBytes + 2],
-                                                                       bytes[(int)numBytes + 1],
-                                                                       bytes[(int)numBytes + 0]);
+                    uint sourceUInt = DWord.FromBytes(bytes[(int) numBytes + 3],
+                        bytes[(int) numBytes + 2],
+                        bytes[(int) numBytes + 1],
+                        bytes[(int) numBytes + 0]);
                     value = sourceUInt.ConvertToInt();
                     numBytes += 4;
                     break;
@@ -162,10 +176,10 @@ namespace S7.Net.Types
                         numBytes++;
                     // hier auswerten
                     value = DWord.FromBytes(
-                        bytes[(int)numBytes],
-                        bytes[(int)numBytes + 1],
-                        bytes[(int)numBytes + 2],
-                        bytes[(int)numBytes + 3]);
+                        bytes[(int) numBytes],
+                        bytes[(int) numBytes + 1],
+                        bytes[(int) numBytes + 2],
+                        bytes[(int) numBytes + 3]);
                     numBytes += 4;
                     break;
                 case "Double":
@@ -194,12 +208,21 @@ namespace S7.Net.Types
                             bytes[(int)numBytes + 3] });
                     numBytes += 4;
                     break;
+                case "String":
+                    numBytes = Math.Ceiling(numBytes);
+                    if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
+                        numBytes++;
+                    // get Data Annotation
+                    var maxLengthAttribute = (MaxLengthAttribute) property.GetCustomAttribute(typeof(MaxLengthAttribute), false);
+                    value = StringEx.FromByteArray(bytes.Skip((int) numBytes).Take(maxLengthAttribute.Length + 2).ToArray());
+                    numBytes += maxLengthAttribute.Length + 2;      // string + header = StringEx
+                    break;
                 default:
                     var propClass = Activator.CreateInstance(propertyType);
                     var buffer = new byte[GetClassSize(propClass)];
                     if (buffer.Length > 0)
                     {
-                        Buffer.BlockCopy(bytes, (int)Math.Ceiling(numBytes), buffer, 0, buffer.Length);
+                        Buffer.BlockCopy(bytes, (int) Math.Ceiling(numBytes), buffer, 0, buffer.Length);
                         FromBytes(propClass, buffer);
                         value = propClass;
                         numBytes += buffer.Length;
@@ -231,12 +254,12 @@ namespace S7.Net.Types
             {
                 if (property.PropertyType.IsArray)
                 {
-                    Array array = (Array)property.GetValue(sourceClass, null);
+                    Array array = (Array) property.GetValue(sourceClass, null);
                     Type elementType = property.PropertyType.GetElementType();
                     for (int i = 0; i < array.Length && numBytes < bytes.Length; i++)
                     {
                         array.SetValue(
-                            GetPropertyValue(elementType, bytes, ref numBytes),
+                            GetPropertyValue(elementType, bytes, ref numBytes, property),
                             i);
                     }
                 }
@@ -244,13 +267,13 @@ namespace S7.Net.Types
                 {
                     property.SetValue(
                         sourceClass,
-                        GetPropertyValue(property.PropertyType, bytes, ref numBytes),
+                        GetPropertyValue(property.PropertyType, bytes, ref numBytes, property),
                         null);
                 }
             }
         }
 
-        private static void ToBytes(object propertyValue, byte[] bytes, ref double numBytes)
+        private static void ToBytes(object propertyValue, byte[] bytes, ref double numBytes, PropertyInfo property)
         {
             int bytePos = 0;
             int bitPos = 0;
@@ -260,37 +283,41 @@ namespace S7.Net.Types
             {
                 case "Boolean":
                     // get the value
-                    bytePos = (int)Math.Floor(numBytes);
-                    bitPos = (int)((numBytes - (double)bytePos) / 0.125);
-                    if ((bool)propertyValue)
-                        bytes[bytePos] |= (byte)Math.Pow(2, bitPos);            // is true
+                    bytePos = (int) Math.Floor(numBytes);
+                    bitPos = (int) ((numBytes - (double) bytePos) / 0.125);
+                    if ((bool) propertyValue)
+                        bytes[bytePos] |= (byte) Math.Pow(2, bitPos);            // is true
                     else
-                        bytes[bytePos] &= (byte)(~(byte)Math.Pow(2, bitPos));   // is false
+                        bytes[bytePos] &= (byte) (~(byte) Math.Pow(2, bitPos));   // is false
                     numBytes += 0.125;
                     break;
                 case "Byte":
-                    numBytes = (int)Math.Ceiling(numBytes);
-                    bytePos = (int)numBytes;
-                    bytes[bytePos] = (byte)propertyValue;
+                    numBytes = (int) Math.Ceiling(numBytes);
+                    bytePos = (int) numBytes;
+                    bytes[bytePos] = (byte) propertyValue;
                     numBytes++;
                     break;
                 case "Int16":
-                    bytes2 = Int.ToByteArray((Int16)propertyValue);
+                    bytes2 = Int.ToByteArray((Int16) propertyValue);
                     break;
                 case "UInt16":
-                    bytes2 = Word.ToByteArray((UInt16)propertyValue);
+                    bytes2 = Word.ToByteArray((UInt16) propertyValue);
                     break;
                 case "Int32":
-                    bytes2 = DInt.ToByteArray((Int32)propertyValue);
+                    bytes2 = DInt.ToByteArray((Int32) propertyValue);
                     break;
                 case "UInt32":
-                    bytes2 = DWord.ToByteArray((UInt32)propertyValue);
+                    bytes2 = DWord.ToByteArray((UInt32) propertyValue);
                     break;
                 case "Double":
-                    bytes2 = Double.ToByteArray((double)propertyValue);
+                    bytes2 = Double.ToByteArray((double) propertyValue);
                     break;
                 case "Single":
-                    bytes2 = Single.ToByteArray((float)propertyValue);
+                    bytes2 = Single.ToByteArray((float) propertyValue);
+                    break;
+                case "String":
+                    var maxLengthAttribute = (MaxLengthAttribute) property.GetCustomAttribute(typeof(MaxLengthAttribute), false);
+                    bytes2 = StringEx.ToByteArray((string) propertyValue, maxLengthAttribute.Length);
                     break;
                 default:
                     bytes2 = ToBytes(propertyValue);
@@ -303,7 +330,7 @@ namespace S7.Net.Types
                 numBytes = Math.Ceiling(numBytes);
                 if ((numBytes / 2 - Math.Floor(numBytes / 2.0)) > 0)
                     numBytes++;
-                bytePos = (int)numBytes;
+                bytePos = (int) numBytes;
                 for (int bCnt = 0; bCnt < bytes2.Length; bCnt++)
                     bytes[bytePos + bCnt] = bytes2[bCnt];
                 numBytes += bytes2.Length;
@@ -326,16 +353,16 @@ namespace S7.Net.Types
             {
                 if (property.PropertyType.IsArray)
                 {
-                    Array array = (Array)property.GetValue(sourceClass, null);
+                    Array array = (Array) property.GetValue(sourceClass, null);
                     Type elementType = property.PropertyType.GetElementType();
                     for (int i = 0; i < array.Length && numBytes < bytes.Length; i++)
                     {
-                        ToBytes(array.GetValue(i), bytes, ref numBytes);
+                        ToBytes(array.GetValue(i), bytes, ref numBytes, property);
                     }
                 }
                 else
                 {
-                    ToBytes(property.GetValue(sourceClass, null), bytes, ref numBytes);
+                    ToBytes(property.GetValue(sourceClass, null), bytes, ref numBytes, property);
                 }
             }
             return bytes;
